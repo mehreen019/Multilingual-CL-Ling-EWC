@@ -2,8 +2,9 @@
 Dataset loading utilities for multilingual sentiment analysis.
 
 This module provides loaders for:
-1. IndicNLP Sentiment Corpus (if available)
-2. Fallback synthetic/demo datasets for quick testing
+1. BnSentMix (Bengali-English code-mixed sentiment)
+2. IndicSentiment-Translated (Hindi sentiment)
+3. Fallback synthetic/demo datasets for quick testing
 """
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -43,21 +44,24 @@ class SentimentDataset(Dataset):
         }
 
 
-def load_indicnlp_sentiment(
-    language: str,
+def load_bengali_sentiment(
     split: str = 'train',
     max_samples: Optional[int] = None
 ) -> Tuple[List[str], List[int]]:
     """
-    Load IndicSentiment dataset from AI4Bharat.
+    Load BnSentMix dataset (Bengali-English code-mixed sentiment).
 
-    Dataset: https://huggingface.co/datasets/ai4bharat/IndicSentiment
-    Languages: Bengali (bn), Hindi (hi), and others
-    Labels: 0 (negative), 1 (neutral), 2 (positive)
+    Dataset: https://huggingface.co/datasets/aplycaebous/BnSentMix
+    Labels: 0=Positive, 1=Negative, 2=Neutral, 3=Mixed
+    
+    For binary classification, we'll map:
+    - Positive (0) -> 1
+    - Negative (1) -> 0
+    - Neutral (2) -> 0 (treat as negative for simplicity)
+    - Mixed (3) -> 1 (treat as positive for simplicity)
 
     Args:
-        language: Language code ('bengali' or 'hindi')
-        split: 'train' or 'test'
+        split: 'train' or 'test' (note: this dataset only has 'train', we'll split it)
         max_samples: Maximum number of samples to load
 
     Returns:
@@ -66,103 +70,159 @@ def load_indicnlp_sentiment(
     try:
         from datasets import load_dataset
 
-        # Map language names to ISO codes
-        lang_map = {
-            'bengali': 'bn',
-            'hindi': 'hi',
-            'bn': 'bn',
-            'hi': 'hi'
-        }
+        print(f"  Loading BnSentMix (Bengali-English code-mixed) dataset...")
 
-        lang_code = lang_map.get(language.lower())
-        if not lang_code:
-            raise ValueError(f"Unsupported language: {language}")
+        # Load the full dataset (only has 'train' split with 20k samples)
+        dataset = load_dataset("aplycaebous/BnSentMix", split="train")
+        
+        # Convert to lists
+        all_texts = []
+        all_labels = []
+        
+        for example in dataset:
+            text = example['Sentence']
+            original_label = example['Label']  # 0=Pos, 1=Neg, 2=Neutral, 3=Mixed
+            
+            # Convert to binary: 0=Negative/Neutral, 1=Positive/Mixed
+            if original_label == 0:  # Positive
+                binary_label = 1
+            elif original_label == 1:  # Negative
+                binary_label = 0
+            elif original_label == 2:  # Neutral
+                binary_label = 0
+            else:  # Mixed (3)
+                binary_label = 1
+            
+            if text and text.strip():
+                all_texts.append(text.strip())
+                all_labels.append(binary_label)
+        
+        # Split into train/test (80/20)
+        total_samples = len(all_texts)
+        split_idx = int(0.8 * total_samples)
+        
+        if split == 'train':
+            texts = all_texts[:split_idx]
+            labels = all_labels[:split_idx]
+        else:  # test/eval
+            texts = all_texts[split_idx:]
+            labels = all_labels[split_idx:]
+        
+        # Limit samples if requested
+        if max_samples:
+            texts = texts[:max_samples]
+            labels = labels[:max_samples]
 
-        print(f"  Loading ai4bharat/IndicSentiment for {language} ({lang_code})...")
+        print(f"  Loaded {len(texts)} Bengali samples ({split} split)")
+        return texts, labels
 
+    except Exception as e:
+        print(f"  Error loading BnSentMix: {e}")
+        raise RuntimeError(
+            f"Could not load BnSentMix dataset for Bengali. "
+            f"Please ensure you have internet connection and the datasets library is installed. "
+            f"Original error: {e}"
+        )
+
+
+def load_hindi_sentiment(
+    split: str = 'train',
+    max_samples: Optional[int] = None
+) -> Tuple[List[str], List[int]]:
+    """
+    Load IndicSentiment-Translated dataset (Hindi sentiment).
+
+    Dataset: https://huggingface.co/datasets/ai4bharat/IndicSentiment-Translated
+    The 'INDIC REVIEW' column contains Hindi text in Devanagari script.
+    Labels: "Positive" or "Negative"
+
+    Args:
+        split: 'train' or 'test' (dataset has 'validation' and 'test')
+        max_samples: Maximum number of samples to load
+
+    Returns:
+        Tuple of (texts, labels)
+    """
+    try:
+        from datasets import load_dataset
+
+        print(f"  Loading IndicSentiment-Translated (Hindi) dataset...")
+
+        # Map split names (dataset has 'validation' and 'test', no 'train')
+        # We'll use 'validation' for training and 'test' for evaluation
+        dataset_split = 'validation' if split == 'train' else 'test'
+        
         # Load dataset
-        dataset = load_dataset("ai4bharat/IndicSentiment", lang_code, split=split, trust_remote_code=True)
+        dataset = load_dataset("ai4bharat/IndicSentiment-Translated", split=dataset_split)
 
-        # Extract texts and labels
         texts = []
         labels = []
 
         for example in dataset:
-            # IndicSentiment has 'INDIC REVIEW' field for text
-            # and 'LABEL' field with values: positive, negative, neutral
-            text = example.get('INDIC REVIEW', example.get('text', ''))
-            label_str = example.get('LABEL', example.get('label', 'neutral'))
-
-            # Convert label to integer
-            # We'll use binary for simplicity: positive=1, negative/neutral=0
-            if isinstance(label_str, str):
-                if 'positive' in label_str.lower():
-                    label = 1
-                else:
-                    label = 0  # Treat neutral and negative as same class
+            # Get Hindi text from 'INDIC REVIEW' column (contains Hindi in Devanagari)
+            text = example['INDIC REVIEW']
+            label_str = example['LABEL']  # "Positive" or "Negative"
+            
+            # Convert to binary: Positive=1, Negative=0
+            if 'Positive' in label_str or 'positive' in label_str:
+                label = 1
             else:
-                label = int(label_str)
-
-            if text and text.strip():  # Only add non-empty texts
+                label = 0
+            
+            if text and text.strip():
                 texts.append(text.strip())
                 labels.append(label)
 
             if max_samples and len(texts) >= max_samples:
                 break
 
-        print(f"  Loaded {len(texts)} samples for {language}")
+        print(f"  Loaded {len(texts)} Hindi samples ({split} split)")
         return texts, labels
 
     except Exception as e:
-        print(f"  Error loading IndicSentiment: {e}")
-        print(f"  Attempting fallback strategies...")
-
-        # Fallback: Try alternative dataset names
-        alternative_datasets = [
-            ("mteb/bengali_sentiment_analysis", 'bengali'),
-            ("bigscience-data/roots_indic-bn_bangla_sentiment_classification_datasets", 'bengali'),
-        ]
-
-        for dataset_name, supported_lang in alternative_datasets:
-            if language.lower() not in supported_lang.lower():
-                continue
-
-            try:
-                print(f"  Trying {dataset_name}...")
-                dataset = load_dataset(dataset_name, split=split, trust_remote_code=True)
-
-                texts = []
-                labels = []
-
-                for example in dataset:
-                    # Try common field names
-                    text = example.get('text', example.get('sentence', example.get('review', '')))
-                    label = example.get('label', example.get('sentiment', 0))
-
-                    if isinstance(label, str):
-                        label = 1 if 'pos' in label.lower() else 0
-
-                    if text and text.strip():
-                        texts.append(text.strip())
-                        labels.append(int(label))
-
-                    if max_samples and len(texts) >= max_samples:
-                        break
-
-                if texts:
-                    print(f"  Successfully loaded {len(texts)} samples from {dataset_name}")
-                    return texts, labels
-
-            except Exception as e2:
-                print(f"  Failed to load {dataset_name}: {e2}")
-                continue
-
-        # If all else fails, raise error
+        print(f"  Error loading IndicSentiment-Translated: {e}")
         raise RuntimeError(
-            f"Could not load any dataset for {language}. "
+            f"Could not load IndicSentiment-Translated dataset for Hindi. "
             f"Please ensure you have internet connection and the datasets library is installed. "
             f"Original error: {e}"
         )
+
+
+def load_sentiment_data(
+    language: str,
+    split: str = 'train',
+    max_samples: Optional[int] = None
+) -> Tuple[List[str], List[int]]:
+    """
+    Load sentiment data for the specified language.
+
+    Args:
+        language: Language code ('bengali', 'hindi', 'bn', or 'hi')
+        split: 'train' or 'test'
+        max_samples: Maximum number of samples to load
+
+    Returns:
+        Tuple of (texts, labels)
+    """
+    # Normalize language name
+    lang_map = {
+        'bengali': 'bengali',
+        'hindi': 'hindi',
+        'bn': 'bengali',
+        'hi': 'hindi'
+    }
+    
+    lang = lang_map.get(language.lower())
+    if not lang:
+        raise ValueError(f"Unsupported language: {language}. Supported: bengali, hindi, bn, hi")
+    
+    # Load appropriate dataset
+    if lang == 'bengali':
+        return load_bengali_sentiment(split, max_samples)
+    elif lang == 'hindi':
+        return load_hindi_sentiment(split, max_samples)
+    else:
+        raise ValueError(f"Unknown language: {lang}")
 
 
 def _generate_demo_data(
@@ -187,7 +247,6 @@ def _generate_demo_data(
     random.seed(42 if split == 'train' else 43)
 
     # Simple vocabulary for demo purposes
-    # In real scenario, these would be actual Bengali/Hindi sentences
     vocab_templates = {
         'bengali': {
             'positive': [
@@ -269,9 +328,9 @@ def prepare_dataloaders(
     Prepare DataLoaders for all languages.
 
     Args:
-        languages: List of language codes
+        languages: List of language codes ('bengali', 'hindi', 'bn', or 'hi')
         tokenizer: Tokenizer to use
-        config: Experiment configuration
+        config: Experiment configuration (must have: train_size, eval_size, max_length, batch_size)
         use_demo_data: Whether to use demo data (for testing)
 
     Returns:
@@ -280,7 +339,7 @@ def prepare_dataloaders(
     dataloaders = {}
 
     for language in languages:
-        print(f"Loading data for {language}...")
+        print(f"\nLoading data for {language}...")
 
         if use_demo_data:
             # Use demo data
@@ -291,11 +350,11 @@ def prepare_dataloaders(
                 language, 'test', config.eval_size
             )
         else:
-            # Load real data from IndicSentiment or fallbacks
-            train_texts, train_labels = load_indicnlp_sentiment(
+            # Load real data
+            train_texts, train_labels = load_sentiment_data(
                 language, 'train', config.train_size
             )
-            eval_texts, eval_labels = load_indicnlp_sentiment(
+            eval_texts, eval_labels = load_sentiment_data(
                 language, 'test', config.eval_size
             )
 
@@ -324,6 +383,6 @@ def prepare_dataloaders(
             'eval': eval_loader
         }
 
-        print(f"  {language}: {len(train_dataset)} train, {len(eval_dataset)} eval samples")
+        print(f"  ✓ {language}: {len(train_dataset)} train, {len(eval_dataset)} eval samples")
 
     return dataloaders
