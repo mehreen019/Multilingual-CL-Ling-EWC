@@ -3,7 +3,7 @@ Dataset loading utilities for multilingual sentiment analysis.
 
 This module provides loaders for:
 1. BnSentMix (Bengali-English code-mixed sentiment)
-2. IndicSentiment-Translated (Hindi sentiment)
+2. Hindi Sentiment Dataset from Kaggle
 3. Fallback synthetic/demo datasets for quick testing
 """
 import torch
@@ -127,63 +127,142 @@ def load_bengali_sentiment(
 
 def load_hindi_sentiment(
     split: str = 'train',
-    max_samples: Optional[int] = None
+    max_samples: Optional[int] = None,
+    data_dir: str = './data/hindi_sentiment'
 ) -> Tuple[List[str], List[int]]:
     """
-    Load IndicSentiment-Translated dataset (Hindi sentiment).
+    Load Hindi Sentiment Dataset from Kaggle.
 
-    Dataset: https://huggingface.co/datasets/ai4bharat/IndicSentiment-Translated
-    The 'INDIC REVIEW' column contains Hindi text in Devanagari script.
+    Dataset: https://www.kaggle.com/datasets/praths71018/hindi-sentiment-dataset
+    Contains ~8,000 Hindi sentences with sentiment labels.
     Labels: "Positive" or "Negative"
 
+    Note: Download the dataset first using download_kaggle_hindi.py script:
+        python download_kaggle_hindi.py --output-dir ./data/hindi_sentiment
+
     Args:
-        split: 'train' or 'test' (dataset has 'validation' and 'test')
+        split: 'train' or 'test' (we'll create an 80/20 split)
         max_samples: Maximum number of samples to load
+        data_dir: Directory where the downloaded CSV file is located
 
     Returns:
         Tuple of (texts, labels)
     """
     try:
-        from datasets import load_dataset
-
-        print(f"  Loading IndicSentiment-Translated (Hindi) dataset...")
-
-        # Map split names (dataset has 'validation' and 'test', no 'train')
-        # We'll use 'validation' for training and 'test' for evaluation
-        dataset_split = 'validation' if split == 'train' else 'test'
+        import pandas as pd
+        from pathlib import Path
         
-        # Load dataset
-        dataset = load_dataset("ai4bharat/IndicSentiment-Translated", split=dataset_split)
+        print(f"  Loading Hindi Sentiment Dataset from Kaggle...")
 
-        texts = []
-        labels = []
-
-        for example in dataset:
-            # Get Hindi text from 'INDIC REVIEW' column (contains Hindi in Devanagari)
-            text = example['INDIC REVIEW']
-            label_str = example['LABEL']  # "Positive" or "Negative"
-            
-            # Convert to binary: Positive=1, Negative=0
-            if 'Positive' in label_str or 'positive' in label_str:
-                label = 1
-            else:
-                label = 0
-            
-            if text and text.strip():
-                texts.append(text.strip())
-                labels.append(label)
-
-            if max_samples and len(texts) >= max_samples:
+        # Find CSV file in data directory
+        data_path = Path(data_dir)
+        csv_files = list(data_path.glob('*.csv'))
+        
+        if not csv_files:
+            raise FileNotFoundError(
+                f"No CSV files found in {data_dir}. "
+                f"Please download the dataset first using: "
+                f"python download_kaggle_hindi.py --output-dir {data_dir}"
+            )
+        
+        # Use the first CSV file found
+        csv_file = csv_files[0]
+        print(f"  Reading from: {csv_file.name}")
+        
+        # Load CSV
+        df = pd.read_csv(csv_file)
+        
+        # Check for common column names
+        # The dataset might have columns like: 'text', 'sentence', 'review', 'sentiment', 'label', etc.
+        possible_text_cols = ['text', 'sentence', 'review', 'hindi_text', 'HINDI TEXT']
+        possible_label_cols = ['label', 'sentiment', 'LABEL', 'SENTIMENT']
+        
+        text_col = None
+        label_col = None
+        
+        # Find text column
+        for col in df.columns:
+            if col.lower() in [c.lower() for c in possible_text_cols]:
+                text_col = col
                 break
+        
+        # Find label column
+        for col in df.columns:
+            if col.lower() in [c.lower() for c in possible_label_cols]:
+                label_col = col
+                break
+        
+        # If not found, use first two columns
+        if text_col is None:
+            text_col = df.columns[0]
+            print(f"  Warning: Using first column '{text_col}' as text column")
+        
+        if label_col is None:
+            label_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+            print(f"  Warning: Using column '{label_col}' as label column")
+        
+        # Extract data
+        all_texts = []
+        all_labels = []
+        
+        for idx, row in df.iterrows():
+            text = str(row[text_col]).strip()
+            label_str = str(row[label_col]).strip()
+            
+            # Skip empty or NaN values
+            if not text or text == 'nan':
+                continue
+            
+            # Convert label to binary: Positive=1, Negative=0
+            # Handle various formats: "Positive", "positive", "pos", "1", etc.
+            label_str_lower = label_str.lower()
+            if 'pos' in label_str_lower or label_str == '1':
+                label = 1
+            elif 'neg' in label_str_lower or label_str == '0':
+                label = 0
+            else:
+                # Try to interpret as number
+                try:
+                    label = int(float(label_str))
+                except:
+                    print(f"  Warning: Unknown label '{label_str}' at index {idx}, skipping")
+                    continue
+            
+            all_texts.append(text)
+            all_labels.append(label)
+        
+        # Split into train/test (80/20)
+        total_samples = len(all_texts)
+        split_idx = int(0.8 * total_samples)
+        
+        if split == 'train':
+            texts = all_texts[:split_idx]
+            labels = all_labels[:split_idx]
+        else:  # test/eval
+            texts = all_texts[split_idx:]
+            labels = all_labels[split_idx:]
+        
+        # Limit samples if requested
+        if max_samples:
+            texts = texts[:max_samples]
+            labels = labels[:max_samples]
 
         print(f"  Loaded {len(texts)} Hindi samples ({split} split)")
+        print(f"  Label distribution: Positive={sum(labels)}, Negative={len(labels)-sum(labels)}")
         return texts, labels
 
-    except Exception as e:
-        print(f"  Error loading IndicSentiment-Translated: {e}")
+    except FileNotFoundError as e:
+        print(f"  Error: {e}")
         raise RuntimeError(
-            f"Could not load IndicSentiment-Translated dataset for Hindi. "
-            f"Please ensure you have internet connection and the datasets library is installed. "
+            f"Could not find Hindi Sentiment Dataset in {data_dir}. "
+            f"Please download it first using: "
+            f"python download_kaggle_hindi.py --output-dir {data_dir}"
+        )
+    except Exception as e:
+        print(f"  Error loading Hindi Sentiment Dataset: {e}")
+        raise RuntimeError(
+            f"Could not load Hindi Sentiment Dataset from {data_dir}. "
+            f"Please ensure the dataset is downloaded correctly. "
             f"Original error: {e}"
         )
 

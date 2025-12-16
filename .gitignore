@@ -50,9 +50,7 @@ models/
 *.ckpt
 
 # Data
-data/
 datasets/
-*.csv
 *.tsv
 *.json
 !comparison.json
