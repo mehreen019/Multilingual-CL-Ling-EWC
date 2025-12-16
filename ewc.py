@@ -112,23 +112,18 @@ class EWC:
         language: str,
         sample_size: Optional[int] = None
     ):
-        """
-        Save current task parameters and Fisher Information.
-
-        Args:
-            dataloader: DataLoader for computing Fisher
-            language: Language identifier
-            sample_size: Number of samples for Fisher computation
-        """
         # Save current model parameters
         params = {
-            name: param.data.clone()
+            name: param.data.clone().cpu()  # ADD .cpu() HERE
             for name, param in self.model.named_parameters()
             if param.requires_grad
         }
 
         # Compute Fisher Information
         fisher = self.compute_fisher_information(dataloader, language, sample_size)
+    
+        # Move Fisher to CPU for storage
+        fisher = {name: f.cpu() for name, f in fisher.items()}  # ADD THIS
 
         # Store task information
         self.previous_tasks.append({
@@ -137,23 +132,12 @@ class EWC:
             'language': language
         })
 
-        print(f"Saved task: {language} (Total tasks: {len(self.previous_tasks)})")
-
     def compute_ewc_loss(
         self,
         ewc_lambda: float = 5000.0,
         similarity_scale: Optional[Dict[str, float]] = None
     ) -> torch.Tensor:
-        """
-    Compute EWC penalty loss.
-
-    Args:
-        ewc_lambda: Strength of EWC penalty
-        similarity_scale: Optional dict mapping language to similarity scaling factor
-
-    Returns:
-        EWC penalty loss
-        """
+        """Compute EWC penalty loss."""
         if len(self.previous_tasks) == 0:
             return torch.tensor(0.0, device=self.device, requires_grad=True)
     
@@ -177,9 +161,12 @@ class EWC:
                     losses.append((scale * ewc_lambda / 2.0) * penalty)
 
         if len(losses) == 0:
+            print(f"    DEBUG: No losses computed! previous_tasks={len(self.previous_tasks)}")
             return torch.tensor(0.0, device=self.device, requires_grad=True)
     
-        return torch.stack(losses).sum()
+        total_loss = torch.stack(losses).sum()
+        print(f"    DEBUG EWC: {len(losses)} penalties, total={total_loss.item():.4f}")  # ADD THIS
+        return total_loss
 
 class LinguisticEWC(EWC):
     """
