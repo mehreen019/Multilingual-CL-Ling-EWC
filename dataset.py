@@ -128,7 +128,7 @@ def load_bengali_sentiment(
 def load_hindi_sentiment(
     split: str = 'train',
     max_samples: Optional[int] = None,
-    data_dir: str = './data/'
+    data_dir: str = './data/hindi_sentiment'
 ) -> Tuple[List[str], List[int]]:
     """
     Load Hindi Sentiment Dataset from Kaggle.
@@ -172,6 +172,14 @@ def load_hindi_sentiment(
         # Load CSV
         df = pd.read_csv(csv_file)
         
+        print(f"  CSV shape: {df.shape[0]} rows, {df.shape[1]} columns")
+        print(f"  Columns: {list(df.columns)}")
+        
+        # Show first few label values for debugging
+        if len(df) > 0:
+            sample_labels = df.iloc[:5][df.columns[1] if len(df.columns) > 1 else df.columns[0]].tolist()
+            print(f"  Sample labels: {sample_labels}")
+        
         # Check for common column names
         # The dataset might have columns like: 'text', 'sentence', 'review', 'sentiment', 'label', etc.
         possible_text_cols = ['text', 'sentence', 'review', 'hindi_text', 'HINDI TEXT']
@@ -205,34 +213,53 @@ def load_hindi_sentiment(
         all_texts = []
         all_labels = []
         
+        # Emotion to binary mapping (matching Bengali dataset pattern):
+        # Positive/Mixed (1): joy, surprise
+        # Negative/Neutral (0): neutral, fear, sadness, disgust, anger
+        emotion_to_binary = {
+            'joy': 1,          # Positive
+            'surprise': 1,     # Positive (treat as mixed/positive)
+            'neutral': 0,      # Neutral
+            'fear': 0,         # Negative
+            'sadness': 0,      # Negative
+            'disgust': 0,      # Negative
+            'anger': 0         # Negative
+        }
+        
+        unknown_labels = set()
+        
         for idx, row in df.iterrows():
             text = str(row[text_col]).strip()
-            label_str = str(row[label_col]).strip()
+            label_str = str(row[label_col]).strip().lower()
             
             # Skip empty or NaN values
-            if not text or text == 'nan':
+            if not text or text == 'nan' or not label_str or label_str == 'nan':
                 continue
             
-            # Convert label to binary: Positive=1, Negative=0
-            # Handle various formats: "Positive", "positive", "pos", "1", etc.
-            label_str_lower = label_str.lower()
-            if 'pos' in label_str_lower or label_str == '1':
-                label = 1
-            elif 'neg' in label_str_lower or label_str == '0':
-                label = 0
+            # Map emotion to binary label
+            if label_str in emotion_to_binary:
+                label = emotion_to_binary[label_str]
             else:
-                # Try to interpret as number
-                try:
-                    label = int(float(label_str))
-                except:
-                    print(f"  Warning: Unknown label '{label_str}' at index {idx}, skipping")
-                    continue
+                # Unknown label
+                if label_str not in unknown_labels:
+                    unknown_labels.add(label_str)
+                continue
             
             all_texts.append(text)
             all_labels.append(label)
         
+        if unknown_labels:
+            print(f"  Warning: Found unknown labels: {unknown_labels}")
+        
         # Split into train/test (80/20)
         total_samples = len(all_texts)
+        
+        if total_samples == 0:
+            raise ValueError(
+                f"No valid samples found in the dataset. "
+                f"Please check that the CSV file has the correct format and non-empty text/label columns."
+            )
+        
         split_idx = int(0.8 * total_samples)
         
         if split == 'train':
@@ -241,6 +268,14 @@ def load_hindi_sentiment(
         else:  # test/eval
             texts = all_texts[split_idx:]
             labels = all_labels[split_idx:]
+        
+        # Ensure we have at least some samples in the split
+        if len(texts) == 0:
+            raise ValueError(
+                f"No samples available for {split} split. "
+                f"Total samples: {total_samples}, split index: {split_idx}. "
+                f"Try using a larger dataset or adjust the split ratio."
+            )
         
         # Limit samples if requested
         if max_samples:
