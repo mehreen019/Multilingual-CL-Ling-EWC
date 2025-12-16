@@ -224,7 +224,7 @@ def run_experiment_for_method(
 
         # Save task for EWC (after evaluation, using eval set for Fisher)
         if ewc_module:
-            fisher_loader = dataloaders[language]['eval']  # Use eval set for Fisher
+            fisher_loader = dataloaders[language]['train']  # Use eval set for Fisher
             ewc_module.save_task(
                 fisher_loader,
                 language,
@@ -256,7 +256,7 @@ def main():
     # Prepare dataloaders
     print("\nPreparing datasets...")
     dataloaders = prepare_dataloaders(
-        languages, tokenizer, config, use_demo_data=True
+        languages, tokenizer, config, use_demo_data=False
     )
 
     # Initialize experiment tracker

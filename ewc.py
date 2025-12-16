@@ -31,23 +31,23 @@ class EWC:
 
     def compute_fisher_information(
         self,
-        dataloader: DataLoader,
+       dataloader: DataLoader,
         language: str,
         sample_size: Optional[int] = None
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute Fisher Information Matrix diagonal for current model parameters.
+    Compute Fisher Information Matrix diagonal for current model parameters.
 
-        The Fisher Information is computed as the expected value of the squared
-        gradients of the log-likelihood with respect to the model parameters.
+    The Fisher Information is computed as the expected value of the squared
+    gradients of the log-likelihood with respect to the model parameters.
 
-        Args:
-            dataloader: DataLoader for the current task
-            language: Language identifier for this task
-            sample_size: Number of samples to use (None = use all)
+    Args:
+        dataloader: DataLoader for the current task
+        language: Language identifier for this task
+        sample_size: Number of samples to use (None = use all)
 
-        Returns:
-            Dictionary mapping parameter names to Fisher diagonal values
+    Returns:
+        Dictionary mapping parameter names to Fisher diagonal values
         """
         self.model.eval()
         fisher_dict = {}
@@ -82,16 +82,28 @@ class EWC:
             # Accumulate squared gradients (Fisher diagonal approximation)
             for name, param in self.model.named_parameters():
                 if param.requires_grad and param.grad is not None:
-                    fisher_dict[name] += param.grad.data ** 2
+                    fisher_dict[name] += param.grad.data.pow(2)
 
             samples_processed += input_ids.size(0)
+        
+            # Clear gradients to free memory
+            self.model.zero_grad()
+        
+            # Clear cache
+            if self.device == 'cuda':
+                torch.cuda.empty_cache()
 
-        # Normalize by number of samples
+        # Normalize Fisher Information by number of samples
         num_samples = samples_processed
         for name in fisher_dict:
             fisher_dict[name] /= num_samples
 
         self.model.train()
+    
+        # Final cleanup
+        if self.device == 'cuda':
+            torch.cuda.empty_cache()
+    
         return fisher_dict
 
     def save_task(
@@ -128,49 +140,34 @@ class EWC:
         print(f"Saved task: {language} (Total tasks: {len(self.previous_tasks)})")
 
     def compute_ewc_loss(
-        self,
-        ewc_lambda: float = 5000.0,
-        similarity_scale: Optional[Dict[str, float]] = None
+      self,
+      ewc_lambda: float = 5000.0,
+      similarity_scale: Optional[Dict[str, float]] = None
     ) -> torch.Tensor:
-        """
-        Compute EWC penalty loss.
+      """Compute EWC penalty loss."""
+      if len(self.previous_tasks) == 0:
+        return torch.tensor(0.0, device=self.device)
+    
+      losses = []
 
-        The EWC loss penalizes changes to important parameters:
-        L_EWC = (λ/2) * Σ_i F_i * (θ_i - θ_i*)^2
+      for task in self.previous_tasks:
+        # Get similarity scaling factor for this task
+        scale = 1.0
+        if similarity_scale is not None:
+            task_language = task['language']
+            scale = similarity_scale.get(task_language, 1.0)
 
-        where F_i is the Fisher Information and θ_i* are previous parameters.
+        # Compute penalty for this task
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and name in task['fisher']:
+                fisher = task['fisher'][name]
+                old_param = task['params'][name]
 
-        Args:
-            ewc_lambda: Strength of EWC penalty
-            similarity_scale: Optional dict mapping language to similarity scaling factor
+                # EWC penalty: (λ * similarity_scale / 2) * F * (θ - θ*)^2
+                penalty = (fisher * (param - old_param) ** 2).sum()
+                losses.append((scale * ewc_lambda / 2.0) * penalty)
 
-        Returns:
-            EWC penalty loss
-        """
-        ewc_loss = torch.tensor(0.0, device=self.device)
-
-        for task_idx, task in enumerate(self.previous_tasks):
-            task_loss = torch.tensor(0.0, device=self.device)
-
-            # Get similarity scaling factor for this task
-            scale = 1.0
-            if similarity_scale is not None:
-                task_language = task['language']
-                scale = similarity_scale.get(task_language, 1.0)
-
-            # Compute penalty for this task
-            for name, param in self.model.named_parameters():
-                if param.requires_grad and name in task['fisher']:
-                    fisher = task['fisher'][name]
-                    old_param = task['params'][name]
-
-                    # EWC penalty: (λ * similarity_scale / 2) * F * (θ - θ*)^2
-                    task_loss += (fisher * (param - old_param) ** 2).sum()
-
-            # Apply similarity scaling and lambda
-            ewc_loss += (scale * ewc_lambda / 2.0) * task_loss
-
-        return ewc_loss
+      return sum(losses) if losses else torch.tensor(0.0, device=self.device)
 
 
 class LinguisticEWC(EWC):
