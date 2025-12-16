@@ -140,35 +140,46 @@ class EWC:
         print(f"Saved task: {language} (Total tasks: {len(self.previous_tasks)})")
 
     def compute_ewc_loss(
-      self,
-      ewc_lambda: float = 5000.0,
-      similarity_scale: Optional[Dict[str, float]] = None
+        self,
+        ewc_lambda: float = 5000.0,
+        similarity_scale: Optional[Dict[str, float]] = None
     ) -> torch.Tensor:
-      """Compute EWC penalty loss."""
-      if len(self.previous_tasks) == 0:
-        return torch.tensor(0.0, device=self.device)
+        """
+    Compute EWC penalty loss.
+
+    Args:
+        ewc_lambda: Strength of EWC penalty
+        similarity_scale: Optional dict mapping language to similarity scaling factor
+
+    Returns:
+        EWC penalty loss
+        """
+        if len(self.previous_tasks) == 0:
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
     
-      losses = []
+        losses = []
 
-      for task in self.previous_tasks:
-        # Get similarity scaling factor for this task
-        scale = 1.0
-        if similarity_scale is not None:
-            task_language = task['language']
-            scale = similarity_scale.get(task_language, 1.0)
+        for task in self.previous_tasks:
+            # Get similarity scaling factor for this task
+            scale = 1.0
+            if similarity_scale is not None:
+                task_language = task['language']
+                scale = similarity_scale.get(task_language, 1.0)
 
-        # Compute penalty for this task
-        for name, param in self.model.named_parameters():
-            if param.requires_grad and name in task['fisher']:
-                fisher = task['fisher'][name]
-                old_param = task['params'][name]
+            # Compute penalty for this task
+            for name, param in self.model.named_parameters():
+                if param.requires_grad and name in task['fisher']:
+                    fisher = task['fisher'][name].to(self.device)
+                    old_param = task['params'][name].to(self.device)
 
-                # EWC penalty: (λ * similarity_scale / 2) * F * (θ - θ*)^2
-                penalty = (fisher * (param - old_param) ** 2).sum()
-                losses.append((scale * ewc_lambda / 2.0) * penalty)
+                    # EWC penalty: (λ * scale / 2) * F * (θ - θ*)^2
+                    penalty = (fisher * (param - old_param).pow(2)).sum()
+                    losses.append((scale * ewc_lambda / 2.0) * penalty)
 
-      return sum(losses) if losses else torch.tensor(0.0, device=self.device)
-
+        if len(losses) == 0:
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
+    
+        return torch.stack(losses).sum()
 
 class LinguisticEWC(EWC):
     """
