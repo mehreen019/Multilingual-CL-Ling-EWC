@@ -128,7 +128,7 @@ def load_bengali_sentiment(
 def load_hindi_sentiment(
     split: str = 'train',
     max_samples: Optional[int] = None,
-    data_dir: str = './data/hindi_sentiment'
+    data_dir: str = './data/'
 ) -> Tuple[List[str], List[int]]:
     """
     Load Hindi Sentiment Dataset from Kaggle.
